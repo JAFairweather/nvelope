@@ -117,9 +117,18 @@ $('go').onclick = () => {
 }
 $('nsec').onkeydown = (e) => { if (e.key === 'Enter') $('go').onclick() }
 $('gen').onclick = () => {
+  // The key is shown in-page (selectable, with a Copy button) — an alert()
+  // can't be copied, and this key is the only way back in.
   const k = generateSecretKey()
-  alert('Your new key (write it down — it IS your account):\n\n' + nip19.nsecEncode(k))
-  login(localSigner(k), hexOf(k))
+  $('err').textContent = ''
+  $('newkey').style.display = ''
+  $('newkey-nsec').textContent = nip19.nsecEncode(k)
+  $('newkey-copy').onclick = async () => {
+    await navigator.clipboard.writeText(nip19.nsecEncode(k))
+    $('newkey-copy').textContent = 'Copied ✓'
+    setTimeout(() => { $('newkey-copy').textContent = 'Copy' }, 2000)
+  }
+  $('newkey-continue').onclick = () => login(localSigner(k), hexOf(k))
 }
 $('nip07').onclick = () => {
   if (!window.nostr?.nip44) { $('err').textContent = 'No NIP-07 extension found (needs nip44 support — Alby or nos2x).'; return }

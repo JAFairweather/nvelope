@@ -63,6 +63,10 @@
   #login .alt { color: var(--dim); font-size: 13px; }
   #login .alt a { color: var(--accent); cursor: pointer; }
   #login .err { color: var(--warn); margin-top: 12px; font-size: 13px; min-height: 1em; }
+  .phrase { background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 16px; font-family: var(--mono); font-size: 14px; word-break: break-all;
+    margin: 16px 0 10px; user-select: all; }
+  #newkey .warn { color: var(--warn); font-size: 13px; margin: 0 0 12px; }
   #me { display: none; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; }
   #me code { font-family: var(--mono); color: var(--text); cursor: pointer; }
 
@@ -136,6 +140,14 @@
       <button id="go">Open</button>
     </div>
     <div class="alt">No key? <a id="gen">Generate one</a> — write it down; it is the only way back in.</div>
+    <div id="newkey" style="display:none">
+      <div class="phrase" id="newkey-nsec"></div>
+      <p class="warn">Write it down — it IS your account. No reset, no server copy.</p>
+      <div class="row">
+        <button id="newkey-copy">Copy</button>
+        <button class="primary" id="newkey-continue" style="flex:1">Continue</button>
+      </div>
+    </div>
     <div class="err" id="err"></div>
   </section>
   <nav id="tabs">
