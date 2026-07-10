@@ -6,11 +6,12 @@
   "scripts": {
     "smoke": "node test/smoke.mjs",
     "smoke:local": "node test/smoke.mjs --local",
-    "e2e": "node test/e2e.mjs",
+    "blossom": "node test/blossom.mjs",
     "web": "node app/serve.mjs",
     "sync-lib": "cp ../nip-demo/nipxx.mjs ../nip-demo/liverelay.mjs ../nip-demo/relay.mjs lib/"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
     "nostr-tools": "^2.23.9",
     "ws": "^8.0.0"
   },
