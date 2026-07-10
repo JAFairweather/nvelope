@@ -1,8 +1,8 @@
 // manifest.mjs — the Nvelope manifest: the 30440 payload, NIP-44-encrypted
 // under the scope key. File keys live INSIDE the manifest, so the scope key
-// gates everything (spec §2.1). M1 carries small files inline as base64;
-// M2 moves bodies to Blossom (servers + sha256_cipher) — the schema admits
-// both, and a file entry has exactly one of `inline` | `servers`.
+// gates everything (spec §2.1). Small files ride inline as base64; bigger
+// bodies live on Blossom as ciphertext (servers + sha256_cipher + filekey).
+// A file entry has exactly one of `inline` | `servers`.
 
 export const NVELOPE_VERSION = 1
 
@@ -43,6 +43,24 @@ export function inlineFileEntry({ name, mime, bytes }) {
 }
 
 export const inlineBytes = (entry) => unb64(entry.inline)
+
+/**
+ * M2 blob entry: the body is ciphertext on Blossom servers; the per-file
+ * key rides here, inside the scope-encrypted manifest. `desc` is
+ * uploadBlob's descriptor {sha256, size, servers} — the hash is of the
+ * ciphertext, so verification never needs the key.
+ */
+export function blobFileEntry({ name, mime, size, filekey, desc }) {
+  return {
+    name, mime, size,
+    servers: desc.servers, sha256_cipher: desc.sha256, size_padded: desc.size,
+    filekey: b64(filekey),
+    added_at: Math.floor(Date.now() / 1000),
+    replaces: null,
+  }
+}
+
+export const blobKey = (entry) => unb64(entry.filekey)
 
 /** Replace a file in-place: new entry points at what it supersedes. */
 export function replaceFile(manifest, oldName, entry) {

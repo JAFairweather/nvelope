@@ -13,6 +13,10 @@
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { pad, unpad } from './pad.mjs'
 
+// Public servers verified live (2026-07-10, test/blossom-probe.mjs) to take
+// anonymous ciphertext uploads at 50 MB+ with working BUD-02 delete.
+export const DEFAULT_SERVERS = ['https://nostr.download', 'https://cdn.hzrd149.com']
+
 export const newFileKey = () => crypto.getRandomValues(new Uint8Array(32))
 
 export async function sha256hex(bytes) {

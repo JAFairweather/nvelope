@@ -9,6 +9,7 @@ import { generateSecretKey } from 'nostr-tools'
 import { bucketSize, pad, unpad } from '../shared/pad.mjs'
 import { newFileKey, encryptBlob, decryptBlob, sha256hex,
          uploadBlob, fetchBlob, deleteBlob } from '../shared/blossom.mjs'
+import { newManifest, blobFileEntry, blobKey, validateManifest } from '../shared/manifest.mjs'
 
 let passed = 0, failed = 0
 const check = (name, ok, detail = '') => {
@@ -116,6 +117,22 @@ check('no filekey on the wire', !everything.includes(Buffer.from(filekey).toStri
   && !everything.includes(Buffer.from(filekey).toString('base64')))
 check('uploads were ciphertext of class size only',
   b.seen.filter(s => s.method === 'PUT').every(s => s.body.length === 24 + 65536 + 16))
+
+console.log('\n7. Manifest blob entry: descriptor → entry → key round-trip')
+const entry = blobFileEntry({ name: 'termsheet.pdf', mime: 'application/pdf',
+  size: plain.length, filekey, desc })
+const m = newManifest('deal room')
+m.files.push(entry)
+check('manifest with blob entry validates', validateManifest(m).length === 0)
+check('entry carries the ciphertext hash and true plaintext size',
+  entry.sha256_cipher === desc.sha256 && entry.size === plain.length && entry.size_padded === cipher.length)
+check('filekey survives the manifest round-trip', (() => {
+  const back = blobKey(JSON.parse(JSON.stringify(m)).files[0])
+  return back.length === 32 && back.every((x, i) => x === filekey[i])
+})())
+check('entry without hash/key is rejected', validateManifest({
+  ...m, files: [{ name: 'x', servers: ['https://s'] }],
+}).some(p => p.includes('missing hash/key')))
 
 b.server.close()
 console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`)
