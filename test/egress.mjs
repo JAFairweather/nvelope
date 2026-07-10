@@ -9,8 +9,12 @@
 //      allowed ONLY as an XML namespace identifier (never fetched);
 //      localhost/URL-parse bases are allowed ONLY in the dev server.
 //   2. CONSISTENCY: the allowlist is cross-checked against the live
-//      constants — DEFAULT_SERVERS (imported) and RELAYS (extracted from
-//      app/main.mjs source) must be subsets of it, so the list can't drift.
+//      configuration module — DEFAULT_SERVERS, DEFAULT_RELAYS, and
+//      defaultConfig() (all imported from shipped code) must be subsets of
+//      it, so the list can't drift. Endpoints the USER configures in
+//      Settings (localStorage) are that user's own policy, not shipped
+//      egress — the sanitize path is asserted here so garbage config can
+//      never widen the default surface silently.
 //   3. IMPORT-TIME INTERCEPTION: fetch / WebSocket / XMLHttpRequest are
 //      replaced with recording traps, then every DOM-free module is
 //      imported; zero network calls may occur at module load. Nothing
@@ -45,6 +49,9 @@ const NETWORK = new Set([
 const LINK_ONLY = new Set(['https://github.com'])       // <a href> in HTML only
 const NAMESPACE = new Set(['http://www.w3.org'])        // svg xmlns, never fetched
 const DEV_ONLY = new Set(['http://localhost:4441', 'http://x'])  // serve.mjs
+// RFC 6761/2606 reserved names (".example" etc.) are placeholder copy in UI
+// hints — guaranteed unresolvable, so they cannot be egress.
+const RESERVED = (host) => host === 'example.com' || host.endsWith('.example')
 
 console.log('\n1. Static scan: every URL in shipped code resolves to an allowed origin')
 const files = [
@@ -66,6 +73,7 @@ for (const file of files) {
     found++
     const rel = file.slice(root.length + 1)
     if (NETWORK.has(origin)) continue
+    if (RESERVED(host)) continue
     if (LINK_ONLY.has(origin) && rel.endsWith('.html')
         && new RegExp(`href="${origin}[^"]*"`).test(src)) continue
     if (NAMESPACE.has(origin) && src.includes(`xmlns='${origin}`)) continue
@@ -79,9 +87,9 @@ check('the scan itself sees the expected surface', found >= 10,
   'regex or file list broke if this number collapses')
 
 console.log('\n2. Consistency: the allowlist matches the live configuration')
-const mainSrc = readFileSync(join(root, 'app', 'main.mjs'), 'utf8')
-const relays = mainSrc.match(/wss:\/\/[a-z0-9.-]+/g) ?? []
-check('every configured relay is allowlisted', relays.length >= 3
+const cfgSrc = readFileSync(join(root, 'shared', 'config.mjs'), 'utf8')
+const relays = cfgSrc.match(/wss:\/\/[a-z0-9.-]+/g) ?? []
+check('every default relay is allowlisted', relays.length >= 3
   && relays.every(r => NETWORK.has(r)), relays.join(', '))
 const htmlSrc = readFileSync(join(root, 'app', 'index.html'), 'utf8')
 const importMap = htmlSrc.match(/<script type="importmap">([\s\S]*?)<\/script>/)?.[1] ?? ''
@@ -95,17 +103,46 @@ globalThis.fetch = (u) => { calls.push(String(u)); return Promise.reject(new Err
 globalThis.XMLHttpRequest = class { open(m, u) { calls.push(String(u)) } send() { throw new Error('egress blocked') } setRequestHeader() {} }
 globalThis.WebSocket = class { constructor(u) { calls.push(String(u)); throw new Error('egress blocked') } }
 const modules = ['../shared/pad.mjs', '../shared/blossom.mjs', '../shared/manifest.mjs',
-  '../shared/invite.mjs', '../shared/scrub.mjs', '../lib/nipxx.mjs', '../lib/liverelay.mjs', '../lib/relay.mjs']
+  '../shared/invite.mjs', '../shared/scrub.mjs', '../shared/config.mjs',
+  '../lib/nipxx.mjs', '../lib/liverelay.mjs', '../lib/relay.mjs']
 let importErr = null
-let blossom
+let blossom, config
 try {
-  for (const m of modules) if (m.includes('blossom')) blossom = await import(m); else await import(m)
+  for (const m of modules) {
+    const mod = await import(m)
+    if (m.includes('blossom')) blossom = mod
+    if (m.includes('config')) config = mod
+  }
 } catch (err) { importErr = err }
 check('all shipped modules import cleanly under the traps', importErr === null, importErr?.message ?? '')
 check('zero network calls at import time', calls.length === 0, calls.join(', '))
 check('DEFAULT_SERVERS are allowlisted',
   blossom.DEFAULT_SERVERS.length >= 2 && blossom.DEFAULT_SERVERS.every(s => NETWORK.has(new URL(s).origin)),
   blossom.DEFAULT_SERVERS.join(', '))
+
+console.log('\n4. Live config: shipped defaults stay inside the allowlist; garbage cannot widen them')
+const dflt = config.defaultConfig()
+check('defaultConfig relays ⊆ allowlist', dflt.relays.length >= 3
+  && dflt.relays.every(r => NETWORK.has(r)), dflt.relays.join(', '))
+check('defaultConfig servers ⊆ allowlist', dflt.servers.length >= 2
+  && dflt.servers.every(s => NETWORK.has(new URL(s.url).origin)), dflt.servers.map(s => s.url).join(', '))
+// No localStorage in Node → loadConfig must fall back to the defaults…
+check('loadConfig without storage = defaults', JSON.stringify(config.loadConfig()) === JSON.stringify(dflt))
+// …and a corrupt or hostile stored config sanitizes to the defaults instead
+// of injecting arbitrary origins with invalid schemes.
+const bad = { getItem: () => JSON.stringify({ relays: ['javascript:alert(1)', 'http://evil.example'], servers: [{ url: 'ftp://evil.example' }, 'not a url'] }) }
+check('invalid schemes sanitize back to defaults',
+  JSON.stringify(config.loadConfig(bad)) === JSON.stringify(dflt))
+// A user-chosen endpoint (their own policy) survives the round trip intact.
+const store = new Map()
+const stub = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v), removeItem: k => store.delete(k) }
+config.saveConfig({ relays: ['wss://my.relay.example/'], servers: [{ url: 'https://my.blossom.example/', requiresAuth: true }] }, stub)
+const mine = config.loadConfig(stub)
+check('user config round-trips (trailing slash stripped, flags kept)',
+  mine.relays[0] === 'wss://my.relay.example' && mine.servers[0].url === 'https://my.blossom.example'
+  && mine.servers[0].requiresAuth === true)
+check('resetConfig restores defaults', (config.resetConfig(stub),
+  JSON.stringify(config.loadConfig(stub)) === JSON.stringify(dflt)))
 
 console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`)
 process.exit(failed === 0 ? 0 : 1)

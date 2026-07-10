@@ -7,9 +7,11 @@ import * as nip49 from 'nostr-tools/nip49'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope, loadGrantIndex, fromIssuedEntry } from '../lib/nipxx.mjs'
 import { parseInviteFragment, pollClaims } from '../shared/invite.mjs'
+import { loadConfig } from '../shared/config.mjs'
 import { renderMine } from './shares.mjs'
 import { renderReceived } from './receive.mjs'
 import { openInvite } from './invite.mjs'
+import { renderSettings } from './settings.mjs'
 
 // Bearer-link hygiene: if the fragment carries an invite secret, capture it
 // and scrub the URL bar before anything else can observe location — it must
@@ -17,7 +19,12 @@ import { openInvite } from './invite.mjs'
 const inviteLink = parseInviteFragment(location.hash)
 if (inviteLink) history.replaceState(null, '', location.pathname + location.search)
 
-export const RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.primal.net']
+// Endpoints are per-device configuration (Settings tab), loaded once per page
+// — saving settings reloads, so every module sees one consistent snapshot.
+// Defaults live in shared/config.mjs; user overrides in localStorage.
+export const config = loadConfig()
+export const RELAYS = config.relays
+export const SERVERS = config.servers.map(s => s.url)
 
 export const $ = (id) => document.getElementById(id)
 export const esc = (s) => String(s).replace(/[&<>"']/g, c =>
@@ -54,10 +61,11 @@ function nip07Signer() {
   }
 }
 
+const TABS = ['mine', 'received', 'settings']
 function showTab(t) {
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === t)
-  $('mine').style.display = t === 'mine' ? '' : 'none'
-  $('received').style.display = t === 'received' ? '' : 'none'
+  for (const id of TABS) $(id).style.display = t === id ? '' : 'none'
+  if (t === 'settings') renderSettings()
   location.hash = t
 }
 for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.dataset.tab)
@@ -75,7 +83,7 @@ export async function login(signer, remember) {
   $('invite').style.display = 'none'
   $('me').style.display = 'flex'
   $('tabs').style.display = 'flex'
-  showTab(location.hash === '#received' ? 'received' : 'mine')
+  showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'mine')
   const npub = nip19.npubEncode(state.me)
   $('my-npub').textContent = npub.slice(0, 12) + '…' + npub.slice(-4)
   $('my-npub').onclick = () => navigator.clipboard.writeText(npub)

@@ -8,10 +8,10 @@ import {
   saveGrantIndex, toIssuedEntry,
 } from '../lib/nipxx.mjs'
 import { newManifest, inlineFileEntry, blobFileEntry, replaceFile } from '../shared/manifest.mjs'
-import { DEFAULT_SERVERS, newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
+import { newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
 import { buildInviteUrl, createInvite, approveClaim } from '../shared/invite.mjs'
 import { scrubShare, scrubBytes, scrubSeconds } from '../shared/scrub.mjs'
-import { state, $, esc, fmtSize, contactName, short, load, RELAYS } from './main.mjs'
+import { state, $, esc, fmtSize, contactName, short, load, RELAYS, SERVERS } from './main.mjs'
 
 // Files ≤48 KB ride inline in the encrypted manifest; bigger ones are
 // padded, encrypted under a fresh filekey, and mirrored to Blossom.
@@ -64,7 +64,7 @@ async function uploadEntry(file, bytes, msg) {
   await new Promise(r => setTimeout(r))                    // let the message paint
   const cipher = encryptBlob(filekey, bytes)
   const pct = new Map()
-  const desc = await uploadBlob(DEFAULT_SERVERS, state.signer, cipher, {
+  const desc = await uploadBlob(SERVERS, state.signer, cipher, {
     fetchImpl: progressFetch((url, p) => {
       pct.set(url, p)
       msg.textContent = `${file.name}: uploading ${fmtSize(cipher.length)} — ` +
