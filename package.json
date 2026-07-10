@@ -6,6 +6,7 @@
   "scripts": {
     "smoke": "node test/smoke.mjs",
     "smoke:local": "node test/smoke.mjs --local",
+    "invite": "node test/invite.mjs",
     "blossom": "node test/blossom.mjs",
     "blob:live": "node test/live-blob.mjs",
     "web": "node app/serve.mjs",
