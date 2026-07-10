@@ -111,6 +111,17 @@
   .drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
   .newbar { display: flex; gap: 10px; margin-bottom: 18px; }
   .newbar input { flex: 1; }
+  /* invite links (M3): amber = bearer (anyone with the URL), green = claim */
+  .banner { background: rgba(217,176,72,.1); border: 1px solid rgba(217,176,72,.35);
+    color: var(--warn); border-radius: 10px; padding: 10px 14px; font-size: 13px;
+    margin: 4px 0 16px; }
+  .chip.invite { border-style: dashed; border-color: rgba(217,176,72,.55); color: var(--warn); }
+  .chip.claim { border-color: rgba(124,191,142,.55); color: var(--ok); }
+  .chip .approve { border: none; background: none; color: var(--ok); padding: 0 5px;
+    font-size: 12px; text-decoration: underline; }
+  .invite-out { margin-top: 12px; }
+  .invite-out .phrase { margin: 0 0 4px; }
+  p.warn { color: var(--warn); font-size: 13px; margin: 0 0 12px; }
 </style>
 </head>
 <body>
@@ -157,6 +168,7 @@
   <div id="status"></div>
   <section id="mine" style="display:none"></section>
   <section id="received" style="display:none"></section>
+  <section id="invite" style="display:none"></section>
 </main>
 <script type="module" src="main.mjs"></script>
 </body>

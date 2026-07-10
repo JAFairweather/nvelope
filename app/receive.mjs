@@ -43,31 +43,36 @@ export function renderReceived() {
       always the current version.</div>`
 
   for (const a of document.querySelectorAll('#received .dl'))
-    a.onclick = async (e) => {
+    a.onclick = (e) => {
       e.preventDefault()
       const g = state.incoming[Number(a.dataset.s)]
-      const f = g.data.files[Number(a.dataset.f)]
-      let bytes
-      if (f.inline) bytes = inlineBytes(f)
-      else {
-        // Blob entry: fetch ciphertext from any mirror (hash-verified inside
-        // fetchBlob — a lying server is never accepted), decrypt, unpad.
-        a.textContent = `fetching ${fmtSize(f.size_padded)}…`
-        try {
-          const cipher = await fetchBlob(f.servers, f.sha256_cipher)
-          a.textContent = 'decrypting…'
-          bytes = decryptBlob(blobKey(f), cipher)
-        } catch (err) {
-          a.textContent = 'download'
-          alert(`${f.name}: ${err.message}`)
-          return
-        }
-        a.textContent = 'download'
-      }
-      const blob = new Blob([bytes], { type: f.mime })
-      const url = URL.createObjectURL(blob)
-      const link = Object.assign(document.createElement('a'), { href: url, download: f.name })
-      link.click()
-      URL.revokeObjectURL(url)
+      saveFile(g.data.files[Number(a.dataset.f)], a)
     }
+}
+
+/** Materialize a manifest file entry as a browser download, narrating
+ *  progress into the clicked anchor. Shared with the invite viewer. */
+export async function saveFile(f, a) {
+  let bytes
+  if (f.inline) bytes = inlineBytes(f)
+  else {
+    // Blob entry: fetch ciphertext from any mirror (hash-verified inside
+    // fetchBlob — a lying server is never accepted), decrypt, unpad.
+    a.textContent = `fetching ${fmtSize(f.size_padded)}…`
+    try {
+      const cipher = await fetchBlob(f.servers, f.sha256_cipher)
+      a.textContent = 'decrypting…'
+      bytes = decryptBlob(blobKey(f), cipher)
+    } catch (err) {
+      a.textContent = 'download'
+      alert(`${f.name}: ${err.message}`)
+      return
+    }
+    a.textContent = 'download'
+  }
+  const blob = new Blob([bytes], { type: f.mime })
+  const url = URL.createObjectURL(blob)
+  const link = Object.assign(document.createElement('a'), { href: url, download: f.name })
+  link.click()
+  URL.revokeObjectURL(url)
 }

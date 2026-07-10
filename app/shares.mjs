@@ -9,7 +9,8 @@ import {
 } from '../lib/nipxx.mjs'
 import { newManifest, inlineFileEntry, blobFileEntry, replaceFile } from '../shared/manifest.mjs'
 import { DEFAULT_SERVERS, newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
-import { state, $, esc, fmtSize, contactName, load, RELAYS } from './main.mjs'
+import { buildInviteUrl, createInvite, approveClaim } from '../shared/invite.mjs'
+import { state, $, esc, fmtSize, contactName, short, load, RELAYS } from './main.mjs'
 
 // Files ≤48 KB ride inline in the encrypted manifest; bigger ones are
 // padded, encrypted under a fresh filekey, and mirrored to Blossom.
@@ -24,6 +25,12 @@ const syncIndex = () => saveGrantIndex(state.relay, state.signer, {
   ...state.myIndex,
   issued: state.myShares.filter(s => !s.draft).map(s => toIssuedEntry(s, s.grantees)),
 })
+
+// Bearer-link ledger: which grantee pubkeys are invite keys. An app-level
+// `nvelope_invites` field on the Grant Index — the index payload is
+// app-extensible JSON, so the flag persists without touching lib/.
+const invitesOf = (scopeId) => (state.myIndex.nvelope_invites ?? []).filter(v => v.scope === scopeId)
+const setInvites = (list) => { state.myIndex.nvelope_invites = list }
 
 function parsePub(input) {
   const s = input.trim()
@@ -88,9 +95,17 @@ const fileRow = (f) => `
 
 function shareCard(s, i) {
   const m = s.manifest
-  const chips = s.grantees.map(pk =>
-    `<span class="chip" data-pub="${pk}">${esc(contactName(pk))}<button class="unshare" title="stop sharing (rotates key)">×</button></span>`
+  const invites = invitesOf(s.scopeId)
+  const bearer = new Set(invites.filter(v => !v.claimed_by).map(v => v.pub))
+  const claimedVia = new Set(invites.map(v => v.claimed_by).filter(Boolean))
+  const chips = s.grantees.map(pk => bearer.has(pk)
+    ? `<span class="chip invite" data-pub="${pk}" title="bearer link — anyone holding the URL can open this share">invite link · ${esc(short(pk))}<button class="unshare" title="revoke this link (rotates key)">×</button></span>`
+    : `<span class="chip" data-pub="${pk}"${claimedVia.has(pk) ? ' title="claimed via invite link"' : ''}>${esc(contactName(pk))}<button class="unshare" title="stop sharing (rotates key)">×</button></span>`
   ).join('') || '<span class="msg">shared with nobody yet</span>'
+  const pend = state.pendingClaims.filter(c => c.scope === s.scopeId)
+  const claims = pend.map(c =>
+    `<span class="chip claim" data-r="${c.rPub}" data-inv="${c.invitePub}" title="someone opened your link and wants durable access on their own key">claim from ${esc(short(c.rPub))}<button class="approve">Approve</button></span>`
+  ).join('')
   const picker = state.contacts.filter(p => !s.grantees.includes(p)).slice(0, 8).map(pk =>
     `<option value="${nip19.npubEncode(pk)}">${esc(contactName(pk))}</option>`).join('')
   return `<div class="card" data-i="${i}">
@@ -110,12 +125,20 @@ function shareCard(s, i) {
     <input type="file" multiple style="display:none" class="fpick">
     <div class="sect2">shared with</div>
     <div class="chips">${chips}</div>
+    ${claims ? `<div class="sect2">pending claims</div><div class="chips">${claims}</div>` : ''}
     <div class="actions">
       <input class="share-pub" list="contacts-${i}" placeholder="add by name or npub1…">
       <datalist id="contacts-${i}">${picker}</datalist>
       <button class="share">Share</button>
+      <button class="bylink" title="mint a bearer URL — anyone holding it can open this share until it is claimed or revoked">Share by link</button>
       <span class="msg act-msg"></span>
     </div>
+    ${s.inviteUrl ? `<div class="invite-out">
+      <div class="phrase">${esc(s.inviteUrl)}</div>
+      <div class="actions"><button class="copylink">Copy link</button>
+        <span class="msg">Copy it now — it is not stored anywhere. Anyone with this URL can open
+        the share until it is claimed or you revoke the link chip above.</span></div>
+    </div>` : ''}
   </div>`
 }
 
@@ -154,6 +177,20 @@ export function renderMine() {
 
     card.querySelector('.delshare').onclick = () => delShare(s, i, msg)
     card.querySelector('.share').onclick = () => shareWith(s, card.querySelector('.share-pub').value, msg)
+    card.querySelector('.bylink').onclick = () => shareByLink(s, msg)
+    const cp = card.querySelector('.copylink')
+    if (cp) cp.onclick = async () => {
+      await navigator.clipboard.writeText(s.inviteUrl)
+      cp.textContent = 'Copied ✓'
+      setTimeout(() => { cp.textContent = 'Copy link' }, 2000)
+    }
+    for (const ap of card.querySelectorAll('.approve'))
+      ap.onclick = (e) => {
+        const chip = e.target.closest('.chip')
+        const claim = state.pendingClaims.find(c =>
+          c.scope === s.scopeId && c.rPub === chip.dataset.r && c.invitePub === chip.dataset.inv)
+        if (claim) approve(s, claim, msg)
+      }
     for (const un of card.querySelectorAll('.unshare'))
       un.onclick = (e) => unshare(s, e.target.closest('.chip').dataset.pub, msg)
     for (const df of card.querySelectorAll('.delfile'))
@@ -215,7 +252,12 @@ async function shareWith(s, input, msg) {
 }
 
 async function unshare(s, pub, msg) {
-  if (!confirm(`Stop sharing "${s.scopeName}" with ${contactName(pub)}?\n\nThe key rotates and the ${s.grantees.length - 1} other recipient(s) are re-granted. They keep anything already downloaded — that is physics — but see nothing new.`)) return
+  const isBearer = invitesOf(s.scopeId).some(v => !v.claimed_by && v.pub === pub)
+  const others = s.grantees.length - 1
+  const prompt = isBearer
+    ? `Revoke this invite link?\n\nThe key rotates and every copy of the URL goes dead. The ${others} other recipient(s) are re-granted and unaffected.`
+    : `Stop sharing "${s.scopeName}" with ${contactName(pub)}?\n\nThe key rotates and the ${others} other recipient(s) are re-granted. They keep anything already downloaded — that is physics — but see nothing new.`
+  if (!confirm(prompt)) return
   msg.textContent = 'rotating key…'
   try {
     const survivors = s.grantees.filter(p => p !== pub)
@@ -224,6 +266,45 @@ async function unshare(s, pub, msg) {
       payload: s.manifest, survivors,
     })
     Object.assign(s, { generation: rotated.generation, scopeKey: rotated.scopeKey, grantees: survivors })
+    if (isBearer) {
+      setInvites((state.myIndex.nvelope_invites ?? []).filter(v => !(v.scope === s.scopeId && v.pub === pub)))
+      delete s.inviteUrl  // the displayed URL just went dead
+    }
+    await syncIndex()
+    renderMine()
+  } catch (err) { msg.textContent = err.message }
+}
+
+/** Mint a bearer invite: fresh keypair, normal grant, URL carrying the nsec
+ *  in the fragment. The secret exists only in the displayed link. */
+async function shareByLink(s, msg) {
+  if (s.draft) { msg.textContent = 'add a file first — publishing happens on first file drop'; return }
+  msg.textContent = 'minting bearer key…'
+  try {
+    const { sk, pub } = await createInvite(state.relay, state.signer, s, RELAYS[0])
+    if (!s.grantees.includes(pub)) s.grantees.push(pub)
+    setInvites([...(state.myIndex.nvelope_invites ?? []),
+      { pub, scope: s.scopeId, created_at: Math.floor(Date.now() / 1000) }])
+    await syncIndex()
+    s.inviteUrl = buildInviteUrl(new URL('.', location.href).href, sk, RELAYS)
+    renderMine()
+  } catch (err) { msg.textContent = err.message }
+}
+
+/** Approve a claim: R becomes a durable grantee; every outstanding bearer
+ *  key for this share is rotated out — the link served its purpose. */
+async function approve(s, claim, msg) {
+  msg.textContent = 'granting their key, rotating the link out…'
+  try {
+    const res = await approveClaim(state.relay, state.signer, s, state.myIndex.nvelope_invites ?? [], claim)
+    Object.assign(s, { generation: res.generation, scopeKey: res.scopeKey, grantees: res.survivors })
+    setInvites((state.myIndex.nvelope_invites ?? [])
+      .map(v => v.scope === s.scopeId && v.pub === claim.invitePub
+        ? { ...v, claimed_by: claim.rPub, claimed_at: Math.floor(Date.now() / 1000) }
+        : v)
+      .filter(v => v.scope !== s.scopeId || v.claimed_by))  // other unclaimed links are dead now
+    state.pendingClaims = state.pendingClaims.filter(c => c.scope !== s.scopeId)
+    delete s.inviteUrl
     await syncIndex()
     renderMine()
   } catch (err) { msg.textContent = err.message }
@@ -237,6 +318,7 @@ async function delShare(s, i, msg) {
     await deleteScope(state.relay, state.signer, s)
     scheduleBlobDelete(s.manifest?.files ?? [], 'share deleted')
     state.myShares.splice(i, 1)
+    setInvites((state.myIndex.nvelope_invites ?? []).filter(v => v.scope !== s.scopeId))
     await syncIndex()
     renderMine()
   } catch (err) { msg.textContent = err.message }
