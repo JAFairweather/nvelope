@@ -8,6 +8,7 @@
     "smoke:local": "node test/smoke.mjs --local",
     "invite": "node test/invite.mjs",
     "blossom": "node test/blossom.mjs",
+    "egress": "node test/egress.mjs",
     "blob:live": "node test/live-blob.mjs",
     "web": "node app/serve.mjs",
     "sync-lib": "cp ../nip-demo/nipxx.mjs ../nip-demo/liverelay.mjs ../nip-demo/relay.mjs lib/"
