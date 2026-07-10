@@ -4,12 +4,16 @@
 //   node test/blossom.mjs
 
 import { createServer } from 'node:http'
-import { localSigner } from '../lib/nipxx.mjs'
-import { generateSecretKey } from 'nostr-tools'
+import { localSigner, newScopeKey, publishScope, grant,
+         receiveGrants, latestGrants, fetchScope } from '../lib/nipxx.mjs'
+import { Relay } from '../lib/relay.mjs'
+import { LocalRelay } from '../lib/liverelay.mjs'
+import { generateSecretKey, getPublicKey } from 'nostr-tools'
 import { bucketSize, pad, unpad } from '../shared/pad.mjs'
 import { newFileKey, encryptBlob, decryptBlob, sha256hex,
          uploadBlob, fetchBlob, deleteBlob } from '../shared/blossom.mjs'
 import { newManifest, blobFileEntry, blobKey, validateManifest } from '../shared/manifest.mjs'
+import { scrubShare, scrubBytes, scrubSeconds } from '../shared/scrub.mjs'
 
 let passed = 0, failed = 0
 const check = (name, ok, detail = '') => {
@@ -135,5 +139,53 @@ check('entry without hash/key is rejected', validateManifest({
 }).some(p => p.includes('missing hash/key')))
 
 b.server.close()
+
+console.log('\n8. Revoke-and-scrub: fresh keys, fresh ciphertext, old blob destroyed')
+const c = await mockBlossom()
+const d = await mockBlossom()
+const relay = new LocalRelay(new Relay())
+const sender = generateSecretKey()
+const alice = generateSecretKey()
+const bob = generateSecretKey()
+const secret2 = 'project chimera acquisition brief'
+const plain2 = new TextEncoder().encode(secret2)
+const fk2 = newFileKey()
+const cipher2 = encryptBlob(fk2, plain2)
+const desc2 = await uploadBlob([c.url, d.url], localSigner(sender), cipher2)
+const man2 = newManifest('deal room 2')
+man2.files.push(blobFileEntry({ name: 'brief.txt', mime: 'text/plain',
+  size: plain2.length, filekey: fk2, desc: desc2 }))
+const share = {
+  scopeId: 'nvscrub', scopeName: 'deal room 2', generation: 1, scopeKey: newScopeKey(),
+  grantees: [getPublicKey(alice), getPublicKey(bob)], manifest: man2,
+}
+await publishScope(relay, sender, { ...share, payload: man2 })
+await grant(relay, sender, getPublicKey(alice), share)
+await grant(relay, sender, getPublicKey(bob), share)
+check('cost estimate counts padded bytes only for blob entries',
+  scrubBytes(man2) === cipher2.length && scrubSeconds(man2) >= 1)
+
+const res = await scrubShare(relay, localSigner(sender), share, [getPublicKey(alice)])
+check('old ciphertext destroyed on both mirrors immediately',
+  !c.blobs.has(desc2.sha256) && !d.blobs.has(desc2.sha256) && res.deleted === 2)
+const fresh = res.manifest.files[0]
+check('fresh filekey and fresh ciphertext hash',
+  fresh.sha256_cipher !== desc2.sha256 && fresh.filekey !== man2.files[0].filekey)
+
+const ag = await fetchScope(relay, latestGrants(await receiveGrants(relay, alice))[0])
+const refetched = await fetchBlob(fresh.servers, fresh.sha256_cipher)
+check('survivor reads v2 and decrypts the re-keyed blob', ag.status === 'ok'
+  && new TextDecoder().decode(decryptBlob(blobKey(ag.data.files[0]), refetched)) === secret2)
+const bg = await fetchScope(relay, latestGrants(await receiveGrants(relay, bob))[0])
+check('revoked party reads stale', bg.status === 'stale')
+check('a saved copy of the OLD manifest now dereferences to nothing', await (async () => {
+  try { await fetchBlob([c.url, d.url], desc2.sha256, { timeout: 2000 }); return false }
+  catch { return true }
+})())
+const wire = Buffer.concat([...c.seen, ...d.seen].map(s => Buffer.from(s.body))).toString('latin1')
+check('scrub never put plaintext on the wire', !wire.includes('chimera'))
+
+c.server.close()
+d.server.close()
 console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`)
 process.exit(failed === 0 ? 0 : 1)

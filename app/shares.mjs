@@ -10,6 +10,7 @@ import {
 import { newManifest, inlineFileEntry, blobFileEntry, replaceFile } from '../shared/manifest.mjs'
 import { DEFAULT_SERVERS, newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
 import { buildInviteUrl, createInvite, approveClaim } from '../shared/invite.mjs'
+import { scrubShare, scrubBytes, scrubSeconds } from '../shared/scrub.mjs'
 import { state, $, esc, fmtSize, contactName, short, load, RELAYS } from './main.mjs'
 
 // Files ≤48 KB ride inline in the encrypted manifest; bigger ones are
@@ -251,6 +252,8 @@ async function shareWith(s, input, msg) {
   } catch (err) { msg.textContent = err.message === 'not an npub' ? 'pick a contact or paste an npub' : err.message }
 }
 
+const fmtDur = (sec) => sec < 90 ? `${Math.max(1, sec)} s` : `~${Math.ceil(sec / 60)} min`
+
 async function unshare(s, pub, msg) {
   const isBearer = invitesOf(s.scopeId).some(v => !v.claimed_by && v.pub === pub)
   const others = s.grantees.length - 1
@@ -258,14 +261,31 @@ async function unshare(s, pub, msg) {
     ? `Revoke this invite link?\n\nThe key rotates and every copy of the URL goes dead. The ${others} other recipient(s) are re-granted and unaffected.`
     : `Stop sharing "${s.scopeName}" with ${contactName(pub)}?\n\nThe key rotates and the ${others} other recipient(s) are re-granted. They keep anything already downloaded — that is physics — but see nothing new.`
   if (!confirm(prompt)) return
-  msg.textContent = 'rotating key…'
+  // Paranoid variant: when the share has blobs, offer to scrub them too —
+  // re-key + re-upload every blob and destroy the old ciphertext immediately,
+  // so a saved copy of the old manifest dereferences to nothing.
+  const bytes = scrubBytes(s.manifest)
+  const nBlobs = (s.manifest?.files ?? []).filter(f => f.servers?.length).length
+  const scrub = bytes > 0 && confirm(
+    `Also scrub the ${nBlobs} encrypted blob${nBlobs === 1 ? '' : 's'}?\n\n` +
+    `Plain revocation leaves the current ciphertext on the blob servers until they garbage-collect; ` +
+    `if ${isBearer ? 'a link holder' : contactName(pub)} saved the manifest, its file keys still open those blobs. ` +
+    `Scrubbing re-encrypts every file under fresh keys, re-uploads, and deletes the old ciphertext immediately.\n\n` +
+    `Cost: ${fmtSize(bytes * 2)} through your connection (download + re-upload), roughly ${fmtDur(scrubSeconds(s.manifest))} at 2 MB/s.\n\n` +
+    `OK = revoke and scrub · Cancel = plain revoke`)
+  msg.textContent = scrub ? 'scrubbing blobs and rotating key…' : 'rotating key…'
   try {
     const survivors = s.grantees.filter(p => p !== pub)
-    const rotated = await rotateScope(state.relay, state.signer, {
-      scopeId: s.scopeId, generation: s.generation, scopeName: s.scopeName,
-      payload: s.manifest, survivors,
-    })
+    const rotated = scrub
+      ? await scrubShare(state.relay, state.signer, s, survivors, {
+          onProgress: (name, stage) => { msg.textContent = name ? `${name}: ${stage}…` : `${stage}…` },
+        })
+      : await rotateScope(state.relay, state.signer, {
+          scopeId: s.scopeId, generation: s.generation, scopeName: s.scopeName,
+          payload: s.manifest, survivors,
+        })
     Object.assign(s, { generation: rotated.generation, scopeKey: rotated.scopeKey, grantees: survivors })
+    if (scrub) s.manifest = rotated.manifest
     if (isBearer) {
       setInvites((state.myIndex.nvelope_invites ?? []).filter(v => !(v.scope === s.scopeId && v.pub === pub)))
       delete s.inviteUrl  // the displayed URL just went dead
