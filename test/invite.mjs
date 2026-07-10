@@ -59,11 +59,14 @@ try {
   let invites = [{ pub: inv.pub, scope: share.scopeId, created_at: Math.floor(Date.now() / 1000) }]
   await saveGrantIndex(relay, sender, {
     issued: [toIssuedEntry(share, share.grantees)], received: [], nvelope_invites: invites,
+    nvelope_aliases: { [share.scopeId]: 'q3-board' },
   })
   const idx = await loadGrantIndex(relay, sender)
   check('bearer flag survives in the index (app-level field, no lib change)',
     idx.nvelope_invites?.length === 1 && idx.nvelope_invites[0].pub === inv.pub
     && idx.nvelope_invites[0].scope === share.scopeId)
+  check('share alias survives in the index (named-URL seam, M5)',
+    idx.nvelope_aliases?.[share.scopeId] === 'q3-board')
   check('invite is a normal grantee in the issued entry', idx.issued[0].grantees.includes(inv.pub))
 
   console.log('\n3. Anyone with the link opens the share — no login, no other key material')
@@ -108,6 +111,7 @@ try {
   check('no share name or filenames visible', !blob.includes('board') && !blob.includes('deck'))
   check('no bearer or claimer pubkeys visible', !blob.includes(inv.pub) && !blob.includes(rPub))
   check('no claim marker visible', !blob.includes('nvelope_claim') && !blob.includes('r_pub'))
+  check('no share alias visible', !blob.includes('q3-board') && !blob.includes('nvelope_aliases'))
 
   console.log(`\n${failed === 0 ? '\x1b[32m' : '\x1b[31m'}${passed} passed, ${failed} failed\x1b[0m`)
   process.exit(failed === 0 ? 0 : 1)

@@ -33,6 +33,18 @@ const syncIndex = () => saveGrantIndex(state.relay, state.signer, {
 const invitesOf = (scopeId) => (state.myIndex.nvelope_invites ?? []).filter(v => v.scope === scopeId)
 const setInvites = (list) => { state.myIndex.nvelope_invites = list }
 
+// Named share URLs (M5 seam): an optional friendly alias per share, stored
+// app-level in the Grant Index like nvelope_invites (encrypted to self,
+// device-independent). RESOLVING an alias to a public URL needs a naming
+// service (DNS or a hosted directory) — a paid-tier concern, out of scope;
+// see README. Here it names the share and labels its bearer links.
+const aliasOf = (scopeId) => (state.myIndex.nvelope_aliases ?? {})[scopeId]
+const setAlias = (scopeId, alias) => {
+  const map = { ...(state.myIndex.nvelope_aliases ?? {}) }
+  if (alias) map[scopeId] = alias; else delete map[scopeId]
+  state.myIndex.nvelope_aliases = map
+}
+
 function parsePub(input) {
   const s = input.trim()
   if (/^[0-9a-f]{64}$/i.test(s)) return s.toLowerCase()
@@ -146,6 +158,9 @@ function shareCard(s, i) {
       <div>
         <span class="name">${esc(s.scopeName)}</span>
         ${s.draft ? '<span class="badge stale">draft</span>' : `<span class="badge live">live · v${s.generation}</span>`}
+        <button class="aliasbtn${aliasOf(s.scopeId) ? ' set' : ''}"
+          title="a friendly name for this share, kept in your encrypted Grant Index — resolving it as a public URL is a hosted-tier service, not part of this app">${
+          aliasOf(s.scopeId) ? `/${esc(aliasOf(s.scopeId))}` : '+ alias'}</button>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <span class="meta">${esc(s.scopeId)}</span>
@@ -173,6 +188,9 @@ function shareCard(s, i) {
       <div class="actions"><button class="copylink">Copy link</button>
         <span class="msg">Copy it now — it is not stored anywhere. Anyone with this URL can open
         the share until it is claimed or you revoke the link chip above.</span></div>
+      ${aliasOf(s.scopeId) ? `<div class="msg">This share is named “/${esc(aliasOf(s.scopeId))}”, but a
+        friendly URL that resolves to this link needs a naming service (DNS or a hosted
+        directory) — a paid-tier concern, out of scope here. Share the URL above.</div>` : ''}
     </div>` : ''}
   </div>`
 }
@@ -217,6 +235,7 @@ export function renderMine() {
     pick.onchange = () => addFiles(s, pick.files, msg, card)
 
     card.querySelector('.delshare').onclick = () => delShare(s, i, msg)
+    card.querySelector('.aliasbtn').onclick = () => editAlias(s, msg)
     card.querySelector('.share').onclick = () => shareWith(s, card.querySelector('.share-pub').value, msg)
     card.querySelector('.bylink').onclick = () => shareByLink(s, msg)
     const cp = card.querySelector('.copylink')
@@ -285,6 +304,25 @@ async function addFiles(s, fileList, msg, card) {
   s.warnings = warnings                      // session-only; next drop resets it
   if (!added) return
   if (await publish(s, msg)) scheduleBlobDelete(replaced, 'file replaced')
+}
+
+/** Set/clear a share's friendly name. Stored in the Grant Index (encrypted
+ *  to self); shown here and on the invite reveal. Not a URL — see README. */
+async function editAlias(s, msg) {
+  const raw = prompt(
+    'Friendly name for this share (letters, digits, dashes — e.g. q3-board).\n\n' +
+    'Kept in your encrypted Grant Index and shown in the UI. Turning it into a public URL ' +
+    '(nvelope.example/s/<name>) would need a naming service — a hosted-tier concern, not part ' +
+    'of this app.\n\nLeave empty to remove the name.', aliasOf(s.scopeId) ?? '')
+  if (raw === null) return
+  const alias = raw.trim().toLowerCase()
+  if (alias && !/^[a-z0-9][a-z0-9-]{0,39}$/.test(alias)) {
+    msg.textContent = 'alias: letters, digits, dashes; start with a letter or digit; 40 max'
+    return
+  }
+  setAlias(s.scopeId, alias)
+  try { if (!s.draft) await syncIndex() } catch (err) { msg.textContent = err.message; return }
+  renderMine()
 }
 
 async function shareWith(s, input, msg) {
@@ -386,6 +424,7 @@ async function delShare(s, i, msg) {
     scheduleBlobDelete(s.manifest?.files ?? [], 'share deleted')
     state.myShares.splice(i, 1)
     setInvites((state.myIndex.nvelope_invites ?? []).filter(v => v.scope !== s.scopeId))
+    setAlias(s.scopeId, null)
     await syncIndex()
     renderMine()
   } catch (err) { msg.textContent = err.message }
