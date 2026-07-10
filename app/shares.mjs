@@ -11,7 +11,7 @@ import { newManifest, inlineFileEntry, blobFileEntry, replaceFile } from '../sha
 import { newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
 import { buildInviteUrl, createInvite, approveClaim } from '../shared/invite.mjs'
 import { scrubShare, scrubBytes, scrubSeconds } from '../shared/scrub.mjs'
-import { state, $, esc, fmtSize, contactName, short, load, RELAYS, SERVERS } from './main.mjs'
+import { state, $, esc, fmtSize, contactName, short, load, RELAYS, SERVERS, config } from './main.mjs'
 
 // Files ≤48 KB ride inline in the encrypted manifest; bigger ones are
 // padded, encrypted under a fresh filekey, and mirrored to Blossom.
@@ -57,7 +57,24 @@ const progressFetch = (onpct) => (url, opts = {}) => new Promise((resolve, rejec
   xhr.send(opts.body)
 })
 
-/** Pad → encrypt under a fresh filekey → mirror upload, narrating into msg. */
+// The managed-endpoint seam: a 401/402/403 is a server demanding an account
+// or payment — actionable, not mysterious. BUD-01 auth is already signed on
+// every request; what's missing is provisioning, which lives outside Nvelope.
+function explainFailure(f) {
+  const host = (() => { try { return new URL(f.server).host } catch { return f.server } })()
+  const managed = config.servers.find(x => x.url === f.server)?.requiresAuth
+  const fix = managed
+    ? 'it is marked managed — provision your account/payment with the operator, then retry'
+    : 'configure a managed server you have access to, or remove it in Settings'
+  if (f.status === 402) return `${host}: requires payment — ${fix}`
+  if (f.status === 401 || f.status === 403) return `${host}: requires auth beyond the signed BUD-01 event — ${fix}`
+  if (f.status === 415) return `${host}: refuses ciphertext uploads — replace it in Settings`
+  if (f.status === 413) return `${host}: blob too large for this server — a managed server would raise the cap`
+  return `${host}: ${f.message}`
+}
+
+/** Pad → encrypt under a fresh filekey → mirror upload, narrating into msg.
+ *  Returns { entry, failures } — partial-mirror failures surface per server. */
 async function uploadEntry(file, bytes, msg) {
   const filekey = newFileKey()
   msg.textContent = `${file.name}: encrypting ${fmtSize(bytes.length)}…`
@@ -71,8 +88,11 @@ async function uploadEntry(file, bytes, msg) {
         [...pct].map(([u, x]) => `${new URL(u).host} ${Math.floor(x * 100)}%`).join(' · ')
     }),
   })
-  return blobFileEntry({ name: file.name, mime: file.type || 'application/octet-stream',
-    size: bytes.length, filekey, desc })
+  return {
+    entry: blobFileEntry({ name: file.name, mime: file.type || 'application/octet-stream',
+      size: bytes.length, filekey, desc }),
+    failures: desc.failures ?? [],
+  }
 }
 
 /** BUD-02 delete superseded ciphertext once the grace window passes. */
@@ -122,6 +142,7 @@ function shareCard(s, i) {
     </div>
     ${m?.note ? `<div class="note">${esc(m.note)}</div>` : ''}
     <div class="files">${(m?.files ?? []).map(fileRow).join('') || '<span class="msg">no files yet</span>'}</div>
+    ${(s.warnings ?? []).map(w => `<div class="upwarn">⚠ ${esc(w)}</div>`).join('')}
     <div class="drop">drop files here — or click to pick (up to 250 MB; big files upload encrypted to blob servers)</div>
     <input type="file" multiple style="display:none" class="fpick">
     <div class="sect2">shared with</div>
@@ -221,21 +242,28 @@ async function publish(s, msg) {
 
 async function addFiles(s, fileList, msg, card) {
   const replaced = []                        // superseded blob entries → grace-window delete
+  const warnings = []                        // per-server refusals, distinct and actionable
   let added = 0
   for (const file of fileList) {
     if (file.size > BLOB_CAP) { msg.textContent = `${file.name}: over the 250 MB cap`; break }
     const bytes = new Uint8Array(await file.arrayBuffer())
     let entry
     try {
-      entry = file.size > INLINE_CAP
-        ? await uploadEntry(file, bytes, msg)
-        : inlineFileEntry({ name: file.name, mime: file.type || 'application/octet-stream', bytes })
+      if (file.size > INLINE_CAP) {
+        const up = await uploadEntry(file, bytes, msg)
+        entry = up.entry
+        for (const f of up.failures)
+          warnings.push(`${file.name}: mirrored to ${entry.servers.length}/${SERVERS.length} — ${explainFailure(f)}`)
+      } else {
+        entry = inlineFileEntry({ name: file.name, mime: file.type || 'application/octet-stream', bytes })
+      }
     } catch (err) { msg.textContent = `${file.name}: ${err.message}`; break }
     const prior = s.manifest.files.find(f => f.name === file.name)
     if (prior) { replaced.push(prior); replaceFile(s.manifest, file.name, entry) }
     else s.manifest.files.push(entry)
     added++
   }
+  s.warnings = warnings                      // session-only; next drop resets it
   if (!added) return
   if (await publish(s, msg)) scheduleBlobDelete(replaced, 'file replaced')
 }

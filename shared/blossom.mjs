@@ -58,8 +58,12 @@ const url = (server, path) => new URL(path, server.endsWith('/') ? server : serv
 
 /**
  * Upload ciphertext to every server (mirroring); ≥1 success is success,
- * like the relay publish contract. Per-server retries with backoff.
- * Returns { sha256, size, servers } — servers that actually hold the blob.
+ * like the relay publish contract. Per-server retries with backoff — but a
+ * 4xx is a verdict, not weather, and fails that server immediately (a
+ * managed endpoint demanding auth or payment won't change its mind in 500ms).
+ * Returns { sha256, size, servers, failures }: servers that actually hold
+ * the blob, plus per-server failures [{ server, status?, message }] so the
+ * caller can tell "mirror down" from "server wants money" distinctly.
  */
 export async function uploadBlob(servers, signer, cipher,
   { retries = 2, timeout = 120_000, fetchImpl = fetch } = {}) {
@@ -73,18 +77,25 @@ export async function uploadBlob(servers, signer, cipher,
           headers: { authorization: auth, 'content-type': 'application/octet-stream' },
           signal: AbortSignal.timeout(timeout),
         })
-        if (!res.ok) throw new Error(`${server}: HTTP ${res.status} ${(await res.text()).slice(0, 80)}`)
+        if (!res.ok) {
+          const err = new Error(`HTTP ${res.status} ${(await res.text()).slice(0, 80)}`.trim())
+          err.status = res.status
+          throw err
+        }
         return server
       } catch (err) {
-        if (attempt >= retries) throw err
+        if ((err.status >= 400 && err.status < 500) || attempt >= retries) throw err
         await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
       }
     }
   }))
   const ok = results.filter(r => r.status === 'fulfilled').map(r => r.value)
+  const failures = results.map((r, i) => r.status === 'rejected'
+    ? { server: servers[i], status: r.reason?.status, message: String(r.reason?.message ?? r.reason).slice(0, 120) }
+    : null).filter(Boolean)
   if (!ok.length) throw new Error('no server accepted the blob: ' +
-    results.map(r => String(r.reason).slice(0, 100)).join(' | '))
-  return { sha256, size: cipher.length, servers: ok }
+    failures.map(f => `${f.server}: ${f.message}`).join(' | '))
+  return { sha256, size: cipher.length, servers: ok, failures }
 }
 
 /**

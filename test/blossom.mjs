@@ -92,6 +92,20 @@ check('both mirrors hold the blob', desc.servers.length === 2 &&
   a.blobs.has(desc.sha256) && b.blobs.has(desc.sha256))
 check('descriptor hash is the ciphertext hash', desc.sha256 === await sha256hex(cipher))
 
+console.log('\n3b. Refusals surface per server, distinctly (managed-endpoint seam)')
+let paywallHits = 0
+const paywall = await new Promise(r => {
+  const srv = createServer((req, res) => { paywallHits++; res.writeHead(402); res.end('payment required') })
+  srv.listen(0, '127.0.0.1', () => r({ url: `http://127.0.0.1:${srv.address().port}/`, srv }))
+})
+const desc3 = await uploadBlob([paywall.url, b.url], signer, cipher)
+check('the willing mirror still succeeds', desc3.servers.length === 1 && desc3.servers[0] === b.url)
+check('the refusing server is reported with its status',
+  desc3.failures.length === 1 && desc3.failures[0].server === paywall.url
+  && desc3.failures[0].status === 402 && desc3.failures[0].message.includes('payment'))
+check('a 4xx verdict is final — not retried', paywallHits === 1)
+paywall.srv.close()
+
 console.log('\n4. Fetch: verify, survive a dead mirror, reject a lying one')
 const got = await fetchBlob(servers, desc.sha256)
 check('fetch → verify → decrypt round-trips',
