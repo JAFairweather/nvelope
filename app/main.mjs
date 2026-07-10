@@ -3,6 +3,7 @@
 // "Shared with me" (recipient side). Pure client of NIP-DA.
 
 import { generateSecretKey, nip19 } from 'nostr-tools'
+import * as nip49 from 'nostr-tools/nip49'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope, loadGrantIndex, fromIssuedEntry } from '../lib/nipxx.mjs'
 import { parseInviteFragment, pollClaims } from '../shared/invite.mjs'
@@ -65,9 +66,12 @@ export async function login(signer, remember) {
   state.signer = signer
   try { state.me = await signer.getPublicKey() }
   catch (err) { $('err').textContent = `extension refused: ${err.message}`; return }
-  sessionStorage.setItem('nvelope-login', remember)
+  // A passphrase-protected key is persisted ONLY as ncryptsec in localStorage;
+  // sessionStorage keeps nothing for it (remember = null on the unlock path).
+  if (remember) sessionStorage.setItem('nvelope-login', remember)
   state.relay ??= new LiveRelay(RELAYS)
   $('login').style.display = 'none'
+  $('unlock').style.display = 'none'
   $('invite').style.display = 'none'
   $('me').style.display = 'flex'
   $('tabs').style.display = 'flex'
@@ -75,7 +79,59 @@ export async function login(signer, remember) {
   const npub = nip19.npubEncode(state.me)
   $('my-npub').textContent = npub.slice(0, 12) + '…' + npub.slice(-4)
   $('my-npub').onclick = () => navigator.clipboard.writeText(npub)
+  if (remember && remember !== 'nip07') offerProtect(remember)
   load()
+}
+
+// --- NIP-49: passphrase-protected key at rest ---------------------------------
+// The ncryptsec in localStorage is the ONLY persisted secret. NIP-07 keys
+// never touch us; unprotected local keys live in sessionStorage for the tab
+// session only (demo convenience) until the user takes the protect offer.
+
+const NC_KEY = 'nvelope-ncryptsec'
+
+function offerProtect(hex) {
+  if (localStorage.getItem(NC_KEY) || sessionStorage.getItem('nvelope-no-protect')) return
+  $('protect').style.display = 'flex'
+  $('protect-go').onclick = async () => {
+    const pass = $('protect-pass').value
+    if (pass.length < 8) { $('protect-msg').textContent = 'use at least 8 characters'; return }
+    $('protect-msg').textContent = 'encrypting key (scrypt — a second or two)…'
+    await new Promise(r => setTimeout(r, 30))                // let the message paint
+    const sk = Uint8Array.from(hex.match(/../g), h => parseInt(h, 16))
+    localStorage.setItem(NC_KEY, nip49.encrypt(sk, pass))
+    sessionStorage.removeItem('nvelope-login')               // ncryptsec replaces it
+    $('protect-pass').value = ''
+    $('protect').style.display = 'none'
+    $('status').textContent = 'Key protected. Next visit asks for the passphrase; the nsec still works anywhere.'
+  }
+  $('protect-pass').onkeydown = (e) => { if (e.key === 'Enter') $('protect-go').onclick() }
+  $('protect-skip').onclick = () => {
+    sessionStorage.setItem('nvelope-no-protect', '1')
+    $('protect').style.display = 'none'
+  }
+}
+
+function showUnlock(ncryptsec) {
+  $('login').style.display = 'none'
+  $('unlock').style.display = ''
+  $('unlock-pass').focus()
+  $('unlock-go').onclick = async () => {
+    $('unlock-err').textContent = 'decrypting (scrypt — a second or two)…'
+    await new Promise(r => setTimeout(r, 30))
+    try {
+      const sk = nip49.decrypt(ncryptsec, $('unlock-pass').value)
+      $('unlock-pass').value = ''
+      login(localSigner(sk), null)                           // nothing new persisted
+    } catch { $('unlock-err').textContent = 'wrong passphrase' }
+  }
+  $('unlock-pass').onkeydown = (e) => { if (e.key === 'Enter') $('unlock-go').onclick() }
+  $('unlock-forget').onclick = () => {
+    if (!confirm('Forget the protected key stored on this device?\n\nThis deletes the only local copy — make sure the nsec is written down; it is the only way back into this account.')) return
+    localStorage.removeItem(NC_KEY)
+    $('unlock').style.display = 'none'
+    $('login').style.display = ''
+  }
 }
 
 export async function load() {
@@ -150,9 +206,11 @@ $('nip07').onclick = () => {
 $('refresh').onclick = () => load()
 $('logout').onclick = () => { sessionStorage.removeItem('nvelope-login'); location.hash = ''; location.reload() }
 
-// An invite link takes precedence over any saved session: the opener flow
-// runs logged-out, with the bearer key held in memory only.
+// Boot order: an invite link takes precedence over everything (the opener
+// flow runs logged-out, bearer key in memory only); then a protected key
+// (ncryptsec present → passphrase prompt); then any tab-session sign-in.
 const saved = sessionStorage.getItem('nvelope-login')
 if (inviteLink) openInvite(inviteLink)
 else if (saved === 'nip07') setTimeout(() => { if (window.nostr?.nip44) login(nip07Signer(), 'nip07') }, 250)
 else if (saved) login(localSigner(Uint8Array.from(saved.match(/../g), h => parseInt(h, 16))), saved)
+else if (localStorage.getItem(NC_KEY)) showUnlock(localStorage.getItem(NC_KEY))
