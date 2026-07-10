@@ -114,6 +114,18 @@ const fileRow = (f) => `
     <button class="icon delfile" title="remove file">×</button>
   </div>`
 
+// Storage-quota surfacing (M5): what a share actually occupies on the blob
+// servers is the PADDED ciphertext, not the file sizes — that is the number
+// a storage quota (free or managed) would meter.
+function quotaLine(m) {
+  const blobs = (m?.files ?? []).filter(f => f.servers?.length)
+  if (!blobs.length) return ''
+  const hosts = [...new Set(blobs.flatMap(f => f.servers))]
+    .map(u => { try { return new URL(u).host } catch { return u } })
+  return `<div class="quota">${fmtSize(scrubBytes(m))} padded ciphertext ·
+    ${blobs.length} blob${blobs.length === 1 ? '' : 's'} on ${esc(hosts.join(', '))}</div>`
+}
+
 function shareCard(s, i) {
   const m = s.manifest
   const invites = invitesOf(s.scopeId)
@@ -142,6 +154,7 @@ function shareCard(s, i) {
     </div>
     ${m?.note ? `<div class="note">${esc(m.note)}</div>` : ''}
     <div class="files">${(m?.files ?? []).map(fileRow).join('') || '<span class="msg">no files yet</span>'}</div>
+    ${quotaLine(m)}
     ${(s.warnings ?? []).map(w => `<div class="upwarn">⚠ ${esc(w)}</div>`).join('')}
     <div class="drop">drop files here — or click to pick (up to 250 MB; big files upload encrypted to blob servers)</div>
     <input type="file" multiple style="display:none" class="fpick">
@@ -165,11 +178,17 @@ function shareCard(s, i) {
 }
 
 export function renderMine() {
+  const totalBytes = state.myShares.reduce((n, s) => n + scrubBytes(s.manifest), 0)
+  const totalBlobs = state.myShares.reduce((n, s) =>
+    n + (s.manifest?.files ?? []).filter(f => f.servers?.length).length, 0)
   $('mine').innerHTML = `
     <div class="newbar">
       <input id="ns-name" placeholder="new share name (e.g. Q3 board materials)">
       <button class="primary" id="ns-go">+ New share</button>
     </div>
+    ${totalBlobs ? `<div class="quota total">blob storage in use: <b>${fmtSize(totalBytes)}</b> padded ciphertext
+      across ${totalBlobs} blob${totalBlobs === 1 ? '' : 's'} — public servers make no persistence
+      promise (see Settings)</div>` : ''}
     ${state.myShares.map(shareCard).join('') ||
       '<div class="empty">No shares yet. Name one above, drop files in, pick recipients.<br>Updates are free; unsharing actually revokes.</div>'}`
 
