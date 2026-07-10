@@ -2,7 +2,7 @@
 // shares.mjs renders "My shares" (sender side); receive.mjs renders
 // "Shared with me" (recipient side). Pure client of NIP-DA.
 
-import { generateSecretKey, nip19 } from 'nostr-tools'
+import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import * as nip49 from 'nostr-tools/nip49'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope, loadGrantIndex, fromIssuedEntry } from '../lib/nipxx.mjs'
@@ -179,6 +179,26 @@ export async function load() {
 export const contactName = (pk) =>
   state.profiles.get(pk)?.display_name || state.profiles.get(pk)?.name || short(pk)
 
+/** Print a paper recovery card: the nsec IS the account, and paper survives
+ *  dead laptops. @media print CSS hides everything but the card. */
+export function printKey(sk, what = 'account') {
+  const nsec = nip19.nsecEncode(sk)
+  const npub = nip19.npubEncode(getPublicKey(sk))
+  $('printcard').innerHTML = `
+    <h1>Nvelope recovery key</h1>
+    <p>This key is the whole ${esc(what)} — there is no reset and no server copy.
+       Sign in with the secret key on any device and everything reconstitutes:
+       your shares, your audience, everything shared with you.</p>
+    <div class="lbl">Secret key — keep this on paper, never in email or chat</div>
+    <div class="k">${esc(nsec)}</div>
+    <div class="lbl">Public key — safe to give out; people share to it</div>
+    <div class="k">${esc(npub)}</div>
+    <div class="foot">Printed ${new Date().toISOString().slice(0, 10)} ·
+      nvelope — encrypted document sharing on nostr</div>`
+  window.print()
+  $('printcard').innerHTML = ''            // the key does not linger in the DOM
+}
+
 export const hexOf = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('')
 $('go').onclick = () => {
   try { const k = parseKey($('nsec').value); login(localSigner(k), hexOf(k)) }
@@ -197,6 +217,7 @@ $('gen').onclick = () => {
     $('newkey-copy').textContent = 'Copied ✓'
     setTimeout(() => { $('newkey-copy').textContent = 'Copy' }, 2000)
   }
+  $('newkey-print').onclick = () => printKey(k)
   $('newkey-continue').onclick = () => login(localSigner(k), hexOf(k))
 }
 $('nip07').onclick = () => {

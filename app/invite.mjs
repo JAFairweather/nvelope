@@ -7,7 +7,7 @@ import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope } from '../lib/nipxx.mjs'
 import { sendClaimRequest } from '../shared/invite.mjs'
-import { $, esc, fmtSize, hexOf, login, RELAYS } from './main.mjs'
+import { $, esc, fmtSize, hexOf, login, printKey, RELAYS } from './main.mjs'
 import { saveFile } from './receive.mjs'
 
 export async function openInvite({ sk, relays }) {
@@ -77,6 +77,7 @@ function render(view, relay, sk, live, total) {
           sender approves, sign in with it to see the share and every future update.</p>
         <div style="display:flex;gap:10px">
           <button id="claim-copy">Copy</button>
+          <button id="claim-print" title="print a paper recovery card">Print</button>
           <button class="primary" id="claim-continue" style="flex:1">Continue with this key</button>
         </div>
       </div>
@@ -108,6 +109,7 @@ function render(view, relay, sk, live, total) {
       $('claim-copy').textContent = 'Copied ✓'
       setTimeout(() => { $('claim-copy').textContent = 'Copy' }, 2000)
     }
+    $('claim-print').onclick = () => printKey(rSk, 'access')
     $('claim-continue').onclick = () => {
       relay.close()
       view.style.display = 'none'

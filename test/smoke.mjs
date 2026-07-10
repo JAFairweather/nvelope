@@ -91,6 +91,15 @@ try {
   const rGot = await fetchScope(relay, rShare)
   check('share + audience recovered from nsec', rGot.status === 'ok' && recovered[0].grantees.length === 1)
 
+  // Recipient side of the same guarantee: alice on a fresh device, holding
+  // nothing but her nsec — a relay scan reconstitutes every live share,
+  // current version, decryptable. No local state, no account, no backup.
+  const freshGrants = latestGrants(await receiveGrants(relay, alice))
+  const freshGot = await fetchScope(relay, freshGrants[0])
+  check('recipient view reconstitutes from nsec alone',
+    freshGot.status === 'ok' && freshGot.data.name === 'Q3 board materials'
+    && new TextDecoder().decode(inlineBytes(freshGot.data.files.find(f => f.name === 'deck.txt'))).includes('to the right'))
+
   if (local) {
     console.log('\n7. Adversarial observer view')
     const view = inner.observerView()
