@@ -2,14 +2,14 @@
 // Revocation surfaces honestly: "access ended", never a silent disappearance.
 
 import { state, $, esc, fmtSize, contactName } from './main.mjs'
-import { inlineBytes } from '../shared/manifest.mjs'
+import { inlineBytes, blobKey } from '../shared/manifest.mjs'
+import { fetchBlob, decryptBlob } from '../shared/blossom.mjs'
 
 function fileRow(f, si, fi) {
   return `<div class="file">
     <span class="fname">${esc(f.name)}</span>
     <span class="fsize">${fmtSize(f.size)}</span>
-    ${f.inline ? `<a href="#" data-s="${si}" data-f="${fi}" class="dl">download</a>`
-               : '<span class="msg">blob (needs next milestone)</span>'}
+    <a href="#" data-s="${si}" data-f="${fi}" class="dl">download</a>
   </div>`
 }
 
@@ -43,11 +43,28 @@ export function renderReceived() {
       always the current version.</div>`
 
   for (const a of document.querySelectorAll('#received .dl'))
-    a.onclick = (e) => {
+    a.onclick = async (e) => {
       e.preventDefault()
       const g = state.incoming[Number(a.dataset.s)]
       const f = g.data.files[Number(a.dataset.f)]
-      const blob = new Blob([inlineBytes(f)], { type: f.mime })
+      let bytes
+      if (f.inline) bytes = inlineBytes(f)
+      else {
+        // Blob entry: fetch ciphertext from any mirror (hash-verified inside
+        // fetchBlob — a lying server is never accepted), decrypt, unpad.
+        a.textContent = `fetching ${fmtSize(f.size_padded)}…`
+        try {
+          const cipher = await fetchBlob(f.servers, f.sha256_cipher)
+          a.textContent = 'decrypting…'
+          bytes = decryptBlob(blobKey(f), cipher)
+        } catch (err) {
+          a.textContent = 'download'
+          alert(`${f.name}: ${err.message}`)
+          return
+        }
+        a.textContent = 'download'
+      }
+      const blob = new Blob([bytes], { type: f.mime })
       const url = URL.createObjectURL(blob)
       const link = Object.assign(document.createElement('a'), { href: url, download: f.name })
       link.click()

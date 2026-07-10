@@ -7,12 +7,18 @@ import {
   newScopeKey, publishScope, grant, rotateScope, deleteScope,
   saveGrantIndex, toIssuedEntry,
 } from '../lib/nipxx.mjs'
-import { newManifest, inlineFileEntry, inlineBytes, replaceFile } from '../shared/manifest.mjs'
+import { newManifest, inlineFileEntry, blobFileEntry, replaceFile } from '../shared/manifest.mjs'
+import { DEFAULT_SERVERS, newFileKey, encryptBlob, uploadBlob, deleteBlob } from '../shared/blossom.mjs'
 import { state, $, esc, fmtSize, contactName, load, RELAYS } from './main.mjs'
 
-// M1: files ride inline in the encrypted manifest — keep them small until
-// the Blossom pipeline (M2) moves bodies to blob servers.
+// Files ≤48 KB ride inline in the encrypted manifest; bigger ones are
+// padded, encrypted under a fresh filekey, and mirrored to Blossom.
 const INLINE_CAP = 48 * 1024
+const BLOB_CAP = 250 * 1048576
+// Old ciphertext lingers this long after a replace/remove so recipients
+// mid-download aren't cut off; then BUD-02 delete (best-effort — the timer
+// only lives as long as this tab, and servers may GC on their own clock).
+const GRACE_MS = 60_000
 
 const syncIndex = () => saveGrantIndex(state.relay, state.signer, {
   ...state.myIndex,
@@ -26,6 +32,52 @@ function parsePub(input) {
   if (type !== 'npub') throw new Error('not an npub')
   return data
 }
+
+// --- blob pipeline -----------------------------------------------------------
+
+// fetch can't report upload progress; XHR can. Same (url, opts) → Response
+// shape uploadBlob expects, plus a per-request percentage callback.
+const progressFetch = (onpct) => (url, opts = {}) => new Promise((resolve, reject) => {
+  const xhr = new XMLHttpRequest()
+  xhr.open(opts.method ?? 'GET', url)
+  for (const [k, v] of Object.entries(opts.headers ?? {})) xhr.setRequestHeader(k, v)
+  xhr.upload.onprogress = (e) => { if (e.lengthComputable) onpct(url, e.loaded / e.total) }
+  xhr.onload = () => resolve(new Response(xhr.response || null, { status: xhr.status }))
+  xhr.onerror = () => reject(new Error('network error'))
+  xhr.onabort = () => reject(new Error('timed out'))
+  opts.signal?.addEventListener('abort', () => xhr.abort())
+  xhr.send(opts.body)
+})
+
+/** Pad → encrypt under a fresh filekey → mirror upload, narrating into msg. */
+async function uploadEntry(file, bytes, msg) {
+  const filekey = newFileKey()
+  msg.textContent = `${file.name}: encrypting ${fmtSize(bytes.length)}…`
+  await new Promise(r => setTimeout(r))                    // let the message paint
+  const cipher = encryptBlob(filekey, bytes)
+  const pct = new Map()
+  const desc = await uploadBlob(DEFAULT_SERVERS, state.signer, cipher, {
+    fetchImpl: progressFetch((url, p) => {
+      pct.set(url, p)
+      msg.textContent = `${file.name}: uploading ${fmtSize(cipher.length)} — ` +
+        [...pct].map(([u, x]) => `${new URL(u).host} ${Math.floor(x * 100)}%`).join(' · ')
+    }),
+  })
+  return blobFileEntry({ name: file.name, mime: file.type || 'application/octet-stream',
+    size: bytes.length, filekey, desc })
+}
+
+/** BUD-02 delete superseded ciphertext once the grace window passes. */
+function scheduleBlobDelete(entries, why) {
+  for (const f of entries) {
+    if (!f?.sha256_cipher || !f.servers?.length) continue
+    setTimeout(() => deleteBlob(f.servers, state.signer, f.sha256_cipher)
+      .then(n => console.log(`nvelope: ${why} — blob ${f.sha256_cipher.slice(0, 12)}… deleted from ${n}/${f.servers.length} server(s)`))
+      .catch(() => { /* best-effort; servers GC on their own clock */ }), GRACE_MS)
+  }
+}
+
+// --- rendering ---------------------------------------------------------------
 
 const fileRow = (f) => `
   <div class="file" data-f="${esc(f.name)}">
@@ -54,7 +106,7 @@ function shareCard(s, i) {
     </div>
     ${m?.note ? `<div class="note">${esc(m.note)}</div>` : ''}
     <div class="files">${(m?.files ?? []).map(fileRow).join('') || '<span class="msg">no files yet</span>'}</div>
-    <div class="drop">drop files here — or click to pick (≤48 KB each until blob support lands)</div>
+    <div class="drop">drop files here — or click to pick (up to 250 MB; big files upload encrypted to blob servers)</div>
     <input type="file" multiple style="display:none" class="fpick">
     <div class="sect2">shared with</div>
     <div class="chips">${chips}</div>
@@ -107,8 +159,9 @@ export function renderMine() {
     for (const df of card.querySelectorAll('.delfile'))
       df.onclick = async (e) => {
         const name = e.target.closest('.file').dataset.f
+        const removed = s.manifest.files.find(f => f.name === name)
         s.manifest.files = s.manifest.files.filter(f => f.name !== name)
-        await publish(s, msg)
+        if (await publish(s, msg)) scheduleBlobDelete([removed], 'file removed')
       }
   }
 }
@@ -124,18 +177,29 @@ async function publish(s, msg) {
     msg.textContent = wasDraft ? 'live' :
       `updated — ${s.grantees.length} recipient${s.grantees.length === 1 ? '' : 's'} see this on next fetch`
     renderMine()
-  } catch (err) { msg.textContent = err.message }
+    return true
+  } catch (err) { msg.textContent = err.message; return false }
 }
 
 async function addFiles(s, fileList, msg, card) {
+  const replaced = []                        // superseded blob entries → grace-window delete
+  let added = 0
   for (const file of fileList) {
-    if (file.size > INLINE_CAP) { msg.textContent = `${file.name}: over the 48 KB inline cap (blob support is next milestone)`; return }
+    if (file.size > BLOB_CAP) { msg.textContent = `${file.name}: over the 250 MB cap`; break }
     const bytes = new Uint8Array(await file.arrayBuffer())
-    const entry = inlineFileEntry({ name: file.name, mime: file.type || 'application/octet-stream', bytes })
-    if (s.manifest.files.some(f => f.name === file.name)) replaceFile(s.manifest, file.name, entry)
+    let entry
+    try {
+      entry = file.size > INLINE_CAP
+        ? await uploadEntry(file, bytes, msg)
+        : inlineFileEntry({ name: file.name, mime: file.type || 'application/octet-stream', bytes })
+    } catch (err) { msg.textContent = `${file.name}: ${err.message}`; break }
+    const prior = s.manifest.files.find(f => f.name === file.name)
+    if (prior) { replaced.push(prior); replaceFile(s.manifest, file.name, entry) }
     else s.manifest.files.push(entry)
+    added++
   }
-  await publish(s, msg)
+  if (!added) return
+  if (await publish(s, msg)) scheduleBlobDelete(replaced, 'file replaced')
 }
 
 async function shareWith(s, input, msg) {
@@ -167,10 +231,11 @@ async function unshare(s, pub, msg) {
 
 async function delShare(s, i, msg) {
   if (s.draft) { state.myShares.splice(i, 1); renderMine(); return }
-  if (!confirm(`Delete "${s.scopeName}"?\n\nThe manifest on relays is replaced by an empty tombstone under a key nobody holds, plus a NIP-09 deletion request. Recipients keep anything already downloaded.`)) return
+  if (!confirm(`Delete "${s.scopeName}"?\n\nThe manifest on relays is replaced by an empty tombstone under a key nobody holds, plus a NIP-09 deletion request. Its encrypted blobs are deleted from the blob servers after a short grace window. Recipients keep anything already downloaded.`)) return
   msg.textContent = 'tombstoning…'
   try {
     await deleteScope(state.relay, state.signer, s)
+    scheduleBlobDelete(s.manifest?.files ?? [], 'share deleted')
     state.myShares.splice(i, 1)
     await syncIndex()
     renderMine()
