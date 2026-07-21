@@ -11,7 +11,8 @@
     "egress": "node test/egress.mjs",
     "blob:live": "node test/live-blob.mjs",
     "web": "node app/serve.mjs",
-    "sync-lib": "cp ../nip-demo/nipxx.mjs ../nip-demo/liverelay.mjs ../nip-demo/relay.mjs lib/"
+    "sync-lib": "cp ../nip-demo/nipxx.mjs ../nip-demo/liverelay.mjs ../nip-demo/relay.mjs lib/",
+    "sync-connect": "{ echo \"// vendored from JAFairweather/luke @ $(git -C ../luke rev-parse --short HEAD) — do not edit; npm run sync-connect\"; cat ../luke/nave-connect.mjs; } > lib/nave-connect.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",

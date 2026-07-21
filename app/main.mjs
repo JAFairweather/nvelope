@@ -1,11 +1,14 @@
-// main.mjs — Nvelope shell: sign-in (NIP-07 or local key), tabs, shared state.
-// shares.mjs renders "My shares" (sender side); receive.mjs renders
-// "Shared with me" (recipient side). Pure client of NIP-DA.
+// main.mjs — Nvelope shell: sign-in via nave-connect (NIP-07 extension or
+// NIP-46 bunker as the front door; the local key with its NIP-49 protect
+// offer stays as a gated advanced path), tabs, shared state. shares.mjs
+// renders "My shares" (sender side); receive.mjs renders "Shared with me"
+// (recipient side). Pure client of NIP-DA.
 
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import * as nip49 from 'nostr-tools/nip49'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope, loadGrantIndex, fromIssuedEntry } from '../lib/nipxx.mjs'
+import { nip07Signer, nip46Signer, serializeSession, parseSession, signerFromSession } from '../lib/nave-connect.mjs'
 import { parseInviteFragment, pollClaims } from '../shared/invite.mjs'
 import { loadConfig } from '../shared/config.mjs'
 import { renderMine } from './shares.mjs'
@@ -50,17 +53,6 @@ function parseKey(input) {
   return data
 }
 
-function nip07Signer() {
-  const n = window.nostr
-  let pub = null
-  return {
-    getPublicKey: async () => (pub ??= await n.getPublicKey()),
-    signEvent: (e) => n.signEvent(e),
-    nip44Encrypt: (pk, pt) => n.nip44.encrypt(pk, pt),
-    nip44Decrypt: (pk, ct) => n.nip44.decrypt(pk, ct),
-  }
-}
-
 const TABS = ['mine', 'received', 'settings']
 function showTab(t) {
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('active', b.dataset.tab === t)
@@ -72,8 +64,13 @@ for (const b of document.querySelectorAll('.tab')) b.onclick = () => showTab(b.d
 
 export async function login(signer, remember) {
   state.signer = signer
-  try { state.me = await signer.getPublicKey() }
-  catch (err) { $('err').textContent = `extension refused: ${err.message}`; return }
+  try { state.me = await signer.getPublicKey() }   // nip46: first use → lazy bunker connect
+  catch (err) {
+    state.signer = null
+    try { await signer.close?.() } catch { /* best effort */ }
+    $('err').textContent = `sign-in failed: ${err.message}`
+    return
+  }
   // A passphrase-protected key is persisted ONLY as ncryptsec in localStorage;
   // sessionStorage keeps nothing for it (remember = null on the unlock path).
   if (remember) sessionStorage.setItem('nvelope-login', remember)
@@ -87,7 +84,9 @@ export async function login(signer, remember) {
   const npub = nip19.npubEncode(state.me)
   $('my-npub').textContent = npub.slice(0, 12) + '…' + npub.slice(-4)
   $('my-npub').onclick = () => navigator.clipboard.writeText(npub)
-  if (remember && remember !== 'nip07') offerProtect(remember)
+  $('me-kind').textContent =
+    { nip07: 'extension', nip46: 'bunker', local: 'local key' }[signer.kind] ?? 'local key'
+  if (remember && parseSession(remember)?.kind === 'local') offerProtect(remember)
   load()
 }
 
@@ -130,7 +129,7 @@ function showUnlock(ncryptsec) {
     try {
       const sk = nip49.decrypt(ncryptsec, $('unlock-pass').value)
       $('unlock-pass').value = ''
-      login(localSigner(sk), null)                           // nothing new persisted
+      login(keySigner(sk), null)                             // nothing new persisted
     } catch { $('unlock-err').textContent = 'wrong passphrase' }
   }
   $('unlock-pass').onkeydown = (e) => { if (e.key === 'Enter') $('unlock-go').onclick() }
@@ -208,8 +207,49 @@ export function printKey(sk, what = 'account') {
 }
 
 export const hexOf = (b) => Array.from(b, x => x.toString(16).padStart(2, '0')).join('')
+
+// nave-connect supplies nip07 + nip46; local keys stay on nipxx's localSigner.
+// (The module's own localSigner has no nip44, and the Grant Index is NIP-44
+// encrypted to self — signerFromSession returning null for `local` is the
+// module telling the app to rebuild from its own key material.) Exported for
+// the invite claim flow, which logs in with a freshly minted local key.
+export function keySigner(sk) { return { kind: 'local', ...localSigner(sk) } }
+
+// NIP-46: the bunker may want a one-time interactive approval — surface its
+// auth_url as a link rather than window.open (popup blockers eat those).
+function onAuthUrl(url) {
+  $('bunker-auth').style.display = ''
+  $('bunker-auth').innerHTML = `The bunker asks for a one-time approval:
+    <a href="${esc(url)}" target="_blank" rel="noopener noreferrer">open its dashboard</a>,
+    approve, then return here.`
+}
+
+$('bunker-go').onclick = async () => {
+  const uri = $('bunker-uri').value.trim()
+  if (!uri) { $('err').textContent = 'Paste the bunker:// URI from your remote signer first.'; return }
+  $('err').textContent = 'connecting to the bunker over its relays… (approve there if asked)'
+  $('bunker-go').disabled = true
+  try {
+    const signer = nip46Signer(uri, { onAuthUrl })
+    await login(signer, serializeSession('nip46', { uri, clientSecretHex: signer.clientSecretHex }))
+    if (state.me) { $('err').textContent = ''; $('bunker-auth').style.display = 'none' }
+  } finally { $('bunker-go').disabled = false }
+}
+$('bunker-uri').onkeydown = (e) => { if (e.key === 'Enter') $('bunker-go').onclick() }
+
+// The local key is deliberately not a headline option (Director, nact#16):
+// it stays available, behind this explicit reveal.
+$('advanced-toggle').onclick = () => {
+  const open = $('advanced').style.display === 'none'
+  $('advanced').style.display = open ? '' : 'none'
+  $('advanced-toggle').textContent = open
+    ? 'Hide the local-key option'
+    : 'Advanced: use a local key in this tab (demo / recovery)'
+  if (open) $('nsec').focus()
+}
+
 $('go').onclick = () => {
-  try { const k = parseKey($('nsec').value); login(localSigner(k), hexOf(k)) }
+  try { const k = parseKey($('nsec').value); login(keySigner(k), hexOf(k)) }
   catch { $('err').textContent = 'Expected nsec1… or 64 hex chars.' }
 }
 $('nsec').onkeydown = (e) => { if (e.key === 'Enter') $('go').onclick() }
@@ -226,20 +266,29 @@ $('gen').onclick = () => {
     setTimeout(() => { $('newkey-copy').textContent = 'Copy' }, 2000)
   }
   $('newkey-print').onclick = () => printKey(k)
-  $('newkey-continue').onclick = () => login(localSigner(k), hexOf(k))
+  $('newkey-continue').onclick = () => login(keySigner(k), hexOf(k))
 }
 $('nip07').onclick = () => {
   if (!window.nostr?.nip44) { $('err').textContent = 'No NIP-07 extension found (needs nip44 support — Alby or nos2x).'; return }
   login(nip07Signer(), 'nip07')
 }
 $('refresh').onclick = () => load()
-$('logout').onclick = () => { sessionStorage.removeItem('nvelope-login'); location.hash = ''; location.reload() }
+$('logout').onclick = () => {
+  try { state.signer?.close?.() } catch { /* best effort */ }   // drop a live bunker pairing
+  sessionStorage.removeItem('nvelope-login'); location.hash = ''; location.reload()
+}
 
 // Boot order: an invite link takes precedence over everything (the opener
-// flow runs logged-out, bearer key in memory only); then a protected key
-// (ncryptsec present → passphrase prompt); then any tab-session sign-in.
+// flow runs logged-out, bearer key in memory only); then any tab-session
+// sign-in (nave-connect parses all three kinds — a bare-hex legacy remember
+// still reads as `local`); then a protected key (ncryptsec present →
+// passphrase prompt); else the login screen. nip46 remembers carry the
+// bunker URI + client key, so a reload re-pairs the SAME bunker session
+// without re-approval.
 const saved = sessionStorage.getItem('nvelope-login')
+const sess = parseSession(saved)
 if (inviteLink) openInvite(inviteLink)
-else if (saved === 'nip07') setTimeout(() => { if (window.nostr?.nip44) login(nip07Signer(), 'nip07') }, 250)
-else if (saved) login(localSigner(Uint8Array.from(saved.match(/../g), h => parseInt(h, 16))), saved)
+else if (sess?.kind === 'nip07') setTimeout(() => { if (window.nostr?.nip44) login(nip07Signer(), 'nip07') }, 250)
+else if (sess?.kind === 'nip46') login(signerFromSession(sess, { onAuthUrl }), saved)
+else if (sess?.kind === 'local') login(keySigner(parseKey(sess.hexKey)), saved)
 else if (localStorage.getItem(NC_KEY)) showUnlock(localStorage.getItem(NC_KEY))

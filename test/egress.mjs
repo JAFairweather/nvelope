@@ -104,7 +104,7 @@ globalThis.XMLHttpRequest = class { open(m, u) { calls.push(String(u)) } send() 
 globalThis.WebSocket = class { constructor(u) { calls.push(String(u)); throw new Error('egress blocked') } }
 const modules = ['../shared/pad.mjs', '../shared/blossom.mjs', '../shared/manifest.mjs',
   '../shared/invite.mjs', '../shared/scrub.mjs', '../shared/config.mjs',
-  '../lib/nipxx.mjs', '../lib/liverelay.mjs', '../lib/relay.mjs']
+  '../lib/nipxx.mjs', '../lib/liverelay.mjs', '../lib/relay.mjs', '../lib/nave-connect.mjs']
 let importErr = null
 let blossom, config
 try {
