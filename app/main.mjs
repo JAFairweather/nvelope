@@ -9,6 +9,7 @@ import * as nip49 from 'nostr-tools/nip49'
 import { LiveRelay } from '../lib/liverelay.mjs'
 import { localSigner, receiveGrants, latestGrants, fetchScope, loadGrantIndex, fromIssuedEntry } from '../lib/nipxx.mjs'
 import { nip07Signer, nip46Signer, serializeSession, parseSession, signerFromSession } from '../lib/nave-connect.mjs'
+import { renderTitlebar, updateTitlebar } from '../lib/nave-titlebar.mjs'
 import { parseInviteFragment, pollClaims } from '../shared/invite.mjs'
 import { loadConfig } from '../shared/config.mjs'
 import { renderMine } from './shares.mjs'
@@ -78,14 +79,12 @@ export async function login(signer, remember) {
   $('login').style.display = 'none'
   $('unlock').style.display = 'none'
   $('invite').style.display = 'none'
-  $('me').style.display = 'flex'
   $('tabs').style.display = 'flex'
   showTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'mine')
-  const npub = nip19.npubEncode(state.me)
-  $('my-npub').textContent = npub.slice(0, 12) + '…' + npub.slice(-4)
-  $('my-npub').onclick = () => navigator.clipboard.writeText(npub)
-  $('me-kind').textContent =
-    { nip07: 'extension', nip46: 'bunker', local: 'local key' }[signer.kind] ?? 'local key'
+  updateTitlebar('#titlebar', {
+    npub: nip19.npubEncode(state.me), kind: signer.kind,
+    onRefresh: () => load(), onLogout: logout,
+  })
   if (remember && parseSession(remember)?.kind === 'local') offerProtect(remember)
   load()
 }
@@ -272,11 +271,19 @@ $('nip07').onclick = () => {
   if (!window.nostr?.nip44) { $('err').textContent = 'No NIP-07 extension found (needs nip44 support — Alby or nos2x).'; return }
   login(nip07Signer(), 'nip07')
 }
-$('refresh').onclick = () => load()
-$('logout').onclick = () => {
+function logout() {
   try { state.signer?.close?.() } catch { /* best effort */ }   // drop a live bunker pairing
   sessionStorage.removeItem('nvelope-login'); location.hash = ''; location.reload()
 }
+
+// The unified Nave title bar (nact#16): boots signed out (brand only — the
+// login card in <main> is the sign-in affordance); login() flips it via
+// updateTitlebar. Refresh / Log out / copy-npub live inside the component.
+const NVELOPE_SEAL = `<svg viewBox="0 0 32 32" aria-hidden="true">
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#0b0906" stroke="#9a83c0" stroke-opacity=".5" stroke-width="1.2"/>
+  <g transform="translate(4 4)" fill="none" stroke="#9a83c0" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="17" height="12" rx="1.5"/><path d="M4 7 L12 13 L20 7"/></g>
+</svg>`
+renderTitlebar('#titlebar', { appName: 'Nvelope', tagline: 'live folders, not stale attachments', sealSvg: NVELOPE_SEAL })
 
 // Boot order: an invite link takes precedence over everything (the opener
 // flow runs logged-out, bearer key in memory only); then any tab-session
