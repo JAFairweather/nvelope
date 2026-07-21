@@ -5,9 +5,9 @@
 
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools'
 import { LiveRelay } from '../lib/liverelay.mjs'
-import { localSigner, receiveGrants, latestGrants, fetchScope } from '../lib/nipxx.mjs'
+import { receiveGrants, latestGrants, fetchScope } from '../lib/nipxx.mjs'
 import { sendClaimRequest } from '../shared/invite.mjs'
-import { $, esc, fmtSize, hexOf, login, printKey, RELAYS } from './main.mjs'
+import { $, esc, fmtSize, hexOf, keySigner, login, printKey, RELAYS } from './main.mjs'
 import { saveFile } from './receive.mjs'
 
 export async function openInvite({ sk, relays }) {
@@ -113,7 +113,7 @@ function render(view, relay, sk, live, total) {
     $('claim-continue').onclick = () => {
       relay.close()
       view.style.display = 'none'
-      login(localSigner(rSk), hexOf(rSk))
+      login(keySigner(rSk), hexOf(rSk))
     }
   }
 }
